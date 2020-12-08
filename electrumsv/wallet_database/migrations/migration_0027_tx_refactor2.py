@@ -97,16 +97,19 @@ class TXOInsertRow(NamedTuple):
     value: int
     keyinstance_id: Optional[int]
     flags: TransactionOutputFlag
+    script_hash: bytes
+    script_type: ScriptType
     script_offset: int
     script_length: int
-    script_hash: bytes
     date_created: int
     date_updated: int
 
 class TXOUpdateRow(NamedTuple):
     # These are ordered and aligned with the SQL statement.
-    script_hash: bytes
+    keyinstance_id: Optional[int]
     flags: TransactionOutputFlag
+    script_hash: bytes
+    script_type: ScriptType
     script_offset: int
     script_length: int
     date_updated: int
@@ -240,14 +243,14 @@ def execute(conn: sqlite3.Connection, callbacks: ProgressCallbacks) -> None:
             txo_flags: TransactionOutputFlag
             if txo_entry is not None:
                 txo_flags = txo_entry.flags
-                txo_updates[TxoKeyType(tx_hash, txo_index)] = TXOUpdateRow(script_hash,
-                    txo_flags, txo.script_offset, txo.script_length, date_updated,
-                    tx_hash, txo_index)
+                txo_updates[TxoKeyType(tx_hash, txo_index)] = TXOUpdateRow(txo_entry.keyinstance_id,
+                    txo_flags, script_hash, ScriptType.NONE, txo.script_offset, txo.script_length,
+                    date_updated, tx_hash, txo_index)
             else:
                 txo_flags = base_txo_flags
                 txo_inserts[TxoKeyType(tx_hash, txo_index)] = TXOInsertRow(tx_hash, txo_index,
-                    txo.value, None, txo_flags, txo.script_offset, txo.script_length, script_hash,
-                    date_updated, date_updated)
+                    txo.value, None, txo_flags, script_hash, ScriptType.NONE, txo.script_offset,
+                    txo.script_length, date_updated, date_updated)
 
             # Remember the same locking script can be used in multiple transactions.
             shl = txo_script_hashes.setdefault(script_hash, [])
@@ -353,38 +356,44 @@ def execute(conn: sqlite3.Connection, callbacks: ProgressCallbacks) -> None:
                     f"{script_hash.hex()} in txo {txo_data.key}")
                 continue
 
+            keyinstance_id = kscript.keyinstance.keyinstance_id
             # All the inputs are inserts, so a single lookup here should prove existence of a spend.
             txi_spend = txi_inserts.get(txo_data.key)
             txo_update = txo_updates.get(txo_data.key)
+            txo_flags = txo_data.flags
             if txo_update:
                 # The output already exists. So there should already be a positive tx delta also.
                 if txi_spend:
                     if txo_data.flags & TransactionOutputFlag.IS_SPENT:
-                        # TODO: Is there anything we can validate here?
-                        pass
+                        # TODO: Is there anything else we can validate here?
+                        assert txo_update.keyinstance_id == keyinstance_id, \
+                            "Transaction output spending key does not match"
                     else:
                         # EFFECT: Account for a previously unrecognised spend.
-                        tx_deltas[(txi_spend.tx_hash, kscript.keyinstance.keyinstance_id)]\
-                            -= txo_data.value
-                        txo_updates[txo_data.key] = txo_update._replace(
-                            flags=txo_data.flags|TransactionOutputFlag.IS_SPENT)
+                        tx_deltas[(txi_spend.tx_hash, keyinstance_id)] -= txo_data.value
+                        txo_flags |= TransactionOutputFlag.IS_SPENT
                 else:
                     if txo_data.flags & TransactionOutputFlag.IS_SPENT:
                         raise DatabaseMigrationError(_("txo update spent with no txi"))
                     # EFFECT: Account for a previously unrecognised receipt.
-                    tx_deltas[(txo_update.tx_hash, kscript.keyinstance.keyinstance_id)]\
-                        += txo_data.value
+                    tx_deltas[(txo_update.tx_hash, keyinstance_id)] += txo_data.value
+                txo_updates[txo_data.key] = txo_update._replace(
+                    flags=txo_data.flags,
+                    keyinstance_id=txo_update.keyinstance_id,
+                    script_type=kscript.script_type)
             else:
                 txo_insert = txo_inserts[txo_data.key]
                 # EFFECT: Account for a newly recognised receipt.
-                tx_deltas[(txo_insert.tx_hash, kscript.keyinstance.keyinstance_id)]\
-                    -= txo_data.value
+                tx_deltas[(txo_insert.tx_hash, keyinstance_id)] -= txo_data.value
+                txo_flags = txo_data.flags
                 if txi_spend:
                     # EFFECT: Account for a newly recognised spend.
-                    tx_deltas[(txi_spend.tx_hash, kscript.keyinstance.keyinstance_id)]\
-                        -= txo_data.value
-                    txo_inserts[txo_data.key] = txo_insert._replace(
-                        flags=txo_data.flags|TransactionOutputFlag.IS_SPENT)
+                    tx_deltas[(txi_spend.tx_hash, keyinstance_id)] -= txo_data.value
+                    txo_flags |= TransactionOutputFlag.IS_SPENT
+                txo_inserts[txo_data.key] = txo_insert._replace(
+                    flags=txo_flags,
+                    keyinstance_id=keyinstance_id,
+                    script_type=kscript.script_type)
 
     # ------------------------------------------------------------------------
     # Update the database.
@@ -420,6 +429,9 @@ def execute(conn: sqlite3.Connection, callbacks: ProgressCallbacks) -> None:
 
     conn.execute("DROP VIEW AccountTransactions")
     conn.execute("ALTER TABLE AccountTransactions2 RENAME TO AccountTransactions")
+    # If we do not recreate this it gets lost (presumably with the old table).
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS "
+        "idx_AccountTransactions_unique ON AccountTransactions(tx_hash, account_id)")
 
     # Transaction output updates.
     callbacks.progress(62, progress_text.format(_("transaction outputs")))
@@ -430,6 +442,7 @@ def execute(conn: sqlite3.Connection, callbacks: ProgressCallbacks) -> None:
         "value INTEGER NOT NULL,"
         "keyinstance_id INTEGER DEFAULT NULL,"
         "flags INTEGER NOT NULL,"
+        f"script_type INTEGER DEFAULT {ScriptType.NONE},"
         "script_offset INTEGER DEFAULT 0,"
         "script_length INTEGER DEFAULT 0,"
         "date_created INTEGER NOT NULL,"
@@ -438,8 +451,9 @@ def execute(conn: sqlite3.Connection, callbacks: ProgressCallbacks) -> None:
         "FOREIGN KEY (keyinstance_id) REFERENCES KeyInstances (keyinstance_id)"
     ")")
     conn.execute("INSERT INTO TransactionOutputs2 (tx_hash, tx_index, value, keyinstance_id, "
-        "flags, date_created, date_updated) SELECT tx_hash, tx_index, value, keyinstance_id, "
-        "flags, date_created, date_updated FROM TransactionOutputs")
+        "flags, date_created, date_updated) "
+        "SELECT tx_hash, tx_index, value, keyinstance_id, flags, date_created, date_updated "
+        "FROM TransactionOutputs")
     conn.execute("DROP TABLE TransactionOutputs")
     conn.execute("ALTER TABLE TransactionOutputs2 RENAME TO TransactionOutputs")
 
@@ -452,10 +466,10 @@ def execute(conn: sqlite3.Connection, callbacks: ProgressCallbacks) -> None:
         "idx_TransactionOutputs_unique ON TransactionOutputs(tx_hash, tx_index)")
 
     conn.executemany("INSERT INTO TransactionOutputs (tx_hash, tx_index, value, "
-        "keyinstance_id, flags, script_offset, script_length, script_hash, date_created, "
-        "date_updated) VALUES (?,?,?,?,?,?,?,?,?,?)", txo_inserts.values())
-    cursor = conn.executemany("UPDATE TransactionOutputs SET script_hash=?, flags=?, "
-        "script_offset=?, script_length=?, date_updated=? WHERE tx_hash=? AND tx_index=?",
+        "keyinstance_id, flags, script_type, script_offset, script_length, script_hash, "
+        "date_created, date_updated) VALUES (?,?,?,?,?,?,?,?,?,?)", txo_inserts.values())
+    cursor = conn.executemany("UPDATE TransactionOutputs SET script_type=?, script_hash=?, "
+        "flags=?, script_offset=?, script_length=?, date_updated=? WHERE tx_hash=? AND tx_index=?",
         txo_updates.values())
     if cursor.rowcount != len(txo_updates):
         raise DatabaseMigrationError(f"Made {cursor.rowcount} txo changes, "
@@ -478,6 +492,8 @@ def execute(conn: sqlite3.Connection, callbacks: ProgressCallbacks) -> None:
         "date_updated INTEGER NOT NULL,"
         "FOREIGN KEY (tx_hash) REFERENCES Transactions (tx_hash)"
     ")")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS "
+        "idx_TransactionInputs_unique ON TransactionInputs(tx_hash, tx_index)")
     conn.executemany("INSERT INTO TransactionInputs (tx_hash, txi_index, spent_tx_hash, "
         "spent_txo_index, sequence, flags, script_offset, script_length, date_created, "
         "date_updated) VALUES (?,?,?,?,?,?,?,?,?,?)", txi_inserts.values())
@@ -540,6 +556,33 @@ def execute(conn: sqlite3.Connection, callbacks: ProgressCallbacks) -> None:
         possible_script.script_hash, date_created, date_created))
     conn.executemany("INSERT INTO KeyInstanceScripts (keyinstance_id, script_type, script_hash, "
         "date_created, date_updated) VALUES (?,?,?,?,?)", key_scripts_rows)
+
+    # Add some helper views.
+
+    conn.execute(
+        "CREATE VIEW TransactionReceivedValues (account_id, tx_hash, keyinstance_id, value_delta) "
+        "AS "
+            "SELECT ATX.account_id, ATX.tx_hash, TXO.keyinstance_id, TXO.value "
+            "FROM AccountTransactions ATX "
+            "INNER JOIN TransactionOutputs TXO ON TXO.tx_hash=ATX.tx_hash "
+            "WHERE TXO.keyinstance_id IS NOT NULL"
+    )
+
+    conn.execute(
+        "CREATE VIEW TransactionSpentValues (account_id, tx_hash, keyinstance_id, value) AS "
+            "SELECT ATX.account_id, ATX.tx_hash, PTXO.keyinstance_id, PTXO.value "
+            "FROM AccountTransactions ATX "
+            "INNER JOIN TransactionInputs TXI ON TXI.tx_hash=ATX.tx_hash "
+            "INNER JOIN TransactionOutputs PTXO ON PTXO.tx_hash=TXI.spent_tx_hash "
+            "WHERE PTXO.keyinstance_id IS NOT NULL"
+    )
+
+    conn.execute(
+        "CREATE VIEW TransactionValues (account_id, tx_hash, keyinstance_id, value) AS "
+            "SELECT account_id, tx_hash, keyinstance_id, value FROM TransactionReceivedValues "
+            "UNION ALL "
+            "SELECT account_id, tx_hash, keyinstance_id, -value FROM TransactionSpentValues"
+    )
 
     # ------------------------------------------------------------------------
     # Validation on completion of this migration step.

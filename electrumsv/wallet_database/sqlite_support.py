@@ -460,3 +460,12 @@ class SqliteExecutor(concurrent.futures.Executor):
             if self._active_items == 0:
                 self._shutdown_event.set()
 
+
+def with_sqlite_connection(func):
+    def wrapped_call(db_context: DatabaseContext, *args, **kwargs):
+        db = db_context.acquire_connection()
+        try:
+            return func(db, *args, **kwargs)
+        finally:
+            db_context.release_connection(db)
+    return wrapped_call

@@ -65,6 +65,7 @@ from electrumsv.network import broadcast_failure_reason
 from electrumsv.networks import Net
 from electrumsv.storage import WalletStorage
 from electrumsv.transaction import Transaction, TransactionContext, txdict_from_str
+from electrumsv.types import ScriptType
 from electrumsv.util import (
     bh2u, format_fee_satoshis, get_update_check_dates, get_identified_release_signers, profiler,
     get_wallet_name_from_path
@@ -1114,9 +1115,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin):
         self.transaction_view = TransactionView(self._accounts_view, self)
         return self.create_list_tab(self.transaction_view)
 
-    def show_key(self, account: AbstractAccount, key_id: int) -> None:
+    def show_key(self, account: AbstractAccount, key_id: int, script_type: ScriptType) -> None:
         from . import address_dialog
-        d = address_dialog.KeyDialog(self, account.get_id(), key_id)
+        d = address_dialog.KeyDialog(self, account.get_id(), key_id, script_type)
         d.exec_()
 
     def show_transaction(self, account: AbstractAccount, tx: Transaction,
@@ -1654,7 +1655,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin):
 
     @protected
     def show_private_key(self, account: AbstractAccount, keyinstance_id: int,
-            password: str) -> None:
+            script_type: ScriptType, password: str) -> None:
         try:
             privkey_text = account.export_private_key(keyinstance_id, password)
         except Exception as e:
@@ -1662,7 +1663,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin):
             self.show_message(str(e))
             return
 
-        script_template = account.get_script_template_for_id(keyinstance_id)
+        script_template = account.get_script_template_for_id(keyinstance_id, script_type)
 
         d = WindowModalDialog(self, _("Private key"))
         d.setMinimumSize(600, 150)

@@ -56,10 +56,10 @@ from .networks import Net
 from .transaction import Transaction, classify_tx_output, parse_script_sig
 from .util.misc import ProgressCallbacks
 from .wallet_database import (AccountTable, TxData, DatabaseContext, migration,
-    KeyInstanceTable, MasterKeyTable, PaymentRequestTable, TransactionDeltaTable,
+    KeyInstanceTable, MasterKeyTable, PaymentRequestTable,
     TransactionOutputTable, TransactionTable, WalletDataTable)
 from .wallet_database.tables import (AccountRow, KeyInstanceRow, MasterKeyRow,
-    PaymentRequestRow, TransactionDeltaRow, TransactionOutputRow, TransactionRow,
+    PaymentRequestRow, TransactionOutputRow, TransactionRow,
     WalletDataRow)
 
 
@@ -1190,9 +1190,6 @@ class TextStore(AbstractStore):
             if len(keyinstance_rows):
                 with KeyInstanceTable(db_context) as table:
                     table.create(keyinstance_rows)
-            if len(txdelta_rows):
-                with TransactionDeltaTable(db_context) as table:
-                    table.create(txdelta_rows)
             if len(txoutput_rows):
                 with TransactionOutputTable(db_context) as table:
                     table.create(txoutput_rows)

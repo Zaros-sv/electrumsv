@@ -38,6 +38,8 @@ class TxFlags(IntFlag):
     HasHeight = 1 << 5
     HasPosition = 1 << 6
 
+    Conflicting = 1 << 7
+
     # Complete transactions must always be added with bytedata. We no longer use this flag.
     # There will be incomplete transactions which may allow b'' perhaps, and which should be
     # updateable, but we're not there yet.
@@ -293,3 +295,7 @@ ACCOUNT_SCRIPT_TYPES = {
         ScriptType.P2PKH,
     ]),
 }
+
+
+class DatabaseWriteErrorCodes(IntEnum):
+    TX_ADD_MISSING_KEYS = 1

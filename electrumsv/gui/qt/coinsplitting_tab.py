@@ -146,7 +146,7 @@ class CoinSplittingTab(QWidget):
         # At this point we know we should get a key that is addressable.
         unused_key = self._account.get_fresh_keys(RECEIVING_SUBPATH, 1)[0]
         self.receiving_script_template = self._account.get_script_template_for_id(
-            unused_key.keyinstance_id)
+            unused_key.keyinstance_id, self._account.get_default_script_type())
         self.split_stage = STAGE_PREPARING
         self.new_transaction_cv = threading.Condition()
 

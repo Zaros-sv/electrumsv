@@ -14,8 +14,8 @@ class CustomAccount(AbstractAccount):
     def _load_sync_state(self) -> None:
         pass
 
-    def get_script_template_for_id(self, keyinstance_id: int,
-            script_type: Optional[ScriptType]=None) -> ScriptTemplate:
+    def get_script_template_for_id(self, keyinstance_id: int, script_type: ScriptType) \
+            -> ScriptTemplate:
         return MockScriptTemplate()
 
 
@@ -62,10 +62,6 @@ def test_key_archive_unarchive(mocker) -> None:
 
     mock_prt = mocker.patch("electrumsv.wallet_database.tables.PaymentRequestTable.read")
     mock_prt.return_value = []
-
-    mock_tdt = mocker.patch(
-        "electrumsv.wallet_database.tables.TransactionDeltaTable.update_used_keys")
-    mock_tdt.return_value = [ KEYINSTANCE_ID+1 ]
 
     account_row = AccountRow(ACCOUNT_ID, MASTERKEY_ID, ScriptType.P2PKH, "ACCOUNT 1")
     keyinstance_rows = [
